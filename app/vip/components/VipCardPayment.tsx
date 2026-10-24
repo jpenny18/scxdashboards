@@ -60,10 +60,13 @@ const VipCardPayment = forwardRef<VipCardHandle, VipCardPaymentProps>(function V
       const total = readTotal(session);
       if (total) onTotalRef.current(total);
 
-      const result = await actions.confirm({
-        redirect: 'if_required',
-        email: customer.email.trim(),
-      });
+      // customer_email is already on the Checkout Session. Passing email here makes Stripe reject confirm().
+      const enteredEmail = customer.email.trim();
+      let result = await actions.confirm({ redirect: 'if_required' });
+      const message = result.type === 'error' ? result.error?.message || '' : '';
+      if (result.type === 'error' && enteredEmail && /email/i.test(message) && !/already set/i.test(message)) {
+        result = await actions.confirm({ redirect: 'if_required', email: enteredEmail });
+      }
 
       if (result.type === 'error') {
         return { type: 'error', message: result.error?.message || 'Payment could not be completed.' };

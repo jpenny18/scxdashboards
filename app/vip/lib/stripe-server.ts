@@ -48,6 +48,21 @@ export type VipCheckoutSession = {
   payment_intent?: string | { id?: string } | null;
 };
 
+/** Hides Stripe Link and its "save my information for faster checkout" prompt. */
+export function withoutStripeLink(params: URLSearchParams) {
+  params.set('wallet_options[link][display]', 'never');
+}
+
+export async function hideStripeLink(sessionId: string): Promise<void> {
+  const params = new URLSearchParams();
+  withoutStripeLink(params);
+  try {
+    await stripeRequest(`/checkout/sessions/${encodeURIComponent(sessionId)}`, params);
+  } catch (error) {
+    console.error('Unable to hide saved checkout:', error instanceof Error ? error.message : error);
+  }
+}
+
 export function requestOrigin(request: Request): string {
   const forwardedHost = request.headers.get('x-forwarded-host');
   const host = forwardedHost || request.headers.get('host') || 'localhost:3000';
@@ -67,6 +82,7 @@ export async function createVipCheckoutSession(amountCents: number, origin: stri
   params.set('return_url', `${origin}${VIP_CHECKOUT.returnPath}?session_id={CHECKOUT_SESSION_ID}`);
   params.set('billing_address_collection', 'auto');
   params.set('integration_identifier', VIP_CHECKOUT.integrationId);
+  withoutStripeLink(params);
 
   return stripeRequest<VipCheckoutSession>('/checkout/sessions', params);
 }

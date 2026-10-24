@@ -2,12 +2,13 @@ import { CHECKOUT } from '../config';
 import {
   requestOrigin,
   stripeRequest,
+  withoutStripeLink,
   type VipCheckoutSession,
 } from '../../vip/lib/stripe-server';
 
 export type PortalCheckoutSession = VipCheckoutSession;
 
-export { isCheckoutSessionId, paymentIntentIdOf, requestOrigin } from '../../vip/lib/stripe-server';
+export { hideStripeLink, isCheckoutSessionId, paymentIntentIdOf, requestOrigin } from '../../vip/lib/stripe-server';
 
 export function portalBaseUrl(request: Request): string {
   const configured = process.env.CHECKOUT_PUBLIC_URL?.trim();
@@ -40,6 +41,7 @@ function sessionParams(amountCents: number, origin: string, customer: PortalCont
   params.set('return_url', `${origin}${CHECKOUT.returnPath}?session_id={CHECKOUT_SESSION_ID}`);
   params.set('billing_address_collection', 'auto');
   params.set('integration_identifier', CHECKOUT.integrationId);
+  withoutStripeLink(params);
   if (includeCustomerEmail) params.set('customer_email', customer.email.trim());
   params.set('metadata[email]', meta(customer.email));
   params.set('metadata[phone]', meta(customer.phone));

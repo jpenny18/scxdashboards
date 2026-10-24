@@ -8,6 +8,7 @@ import {
 } from '../../lib/records';
 import {
   createPortalCheckoutSession,
+  hideStripeLink,
   isCheckoutSessionId,
   portalBaseUrl,
   retrievePortalCheckoutSession,
@@ -51,6 +52,7 @@ export async function POST(request: NextRequest) {
         return paid(existing.id);
       }
       if (!expired && existing.status === 'open' && existing.client_secret) {
+        await hideStripeLink(existing.id);
         return ready(handoff, existing);
       }
     }
@@ -77,6 +79,7 @@ export async function POST(request: NextRequest) {
         return paid(winner.id);
       }
       if (!winner.client_secret) return NextResponse.json({ error: 'Unable to start checkout' }, { status: 502 });
+      await hideStripeLink(winner.id);
       return ready(handoff, winner);
     }
 
