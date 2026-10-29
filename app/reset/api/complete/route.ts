@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
       console.error('Reset record failed:', recorded.error);
       return NextResponse.json({ error: recorded.error }, { status: 500 });
     }
-    return NextResponse.json({ paid: true, returnUrl: recorded.returnUrl, alreadyRecorded: recorded.alreadyRecorded });
+    return NextResponse.json({ paid: true, alreadyRecorded: recorded.alreadyRecorded });
   } catch (error) {
     console.error('Reset complete error:', error instanceof Error ? error.message : error);
     return NextResponse.json(

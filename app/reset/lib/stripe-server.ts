@@ -100,7 +100,23 @@ function assertStripeChargeStaysGeneric() {
   if (metadataKeys.join(',') !== expectedKeys.join(',')) throw new Error('Reset Stripe metadata drifted');
 
   const raw = params.toString().toLowerCase();
-  const banned = ['challenge', 'funded', 'allocation', 'gauntlet', 'mt4', 'mt5', 'platform', 'tier', 'account', 'vip', 'standard', 'instant', 'professional'];
+  const banned = [
+    'challenge',
+    'funded',
+    'allocation',
+    'gauntlet',
+    'mt4',
+    'mt5',
+    'platform',
+    'tier',
+    'account',
+    'vip',
+    'standard',
+    'instant',
+    'professional',
+    'shockwavetrading.com',
+    'shockwave-capital.com',
+  ];
   for (const word of banned) {
     if (raw.includes(word)) throw new Error(`Reset Stripe charge includes ${word}`);
   }

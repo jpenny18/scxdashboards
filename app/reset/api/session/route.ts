@@ -37,8 +37,8 @@ function ready(handoff: ResetHandoff, session: ResetCheckoutSession) {
   });
 }
 
-function paid(returnUrl: string) {
-  return NextResponse.json({ paid: true, returnUrl });
+function paid(sessionId: string | null) {
+  return NextResponse.json({ paid: true, sessionId });
 }
 
 export async function POST(request: NextRequest) {
@@ -47,10 +47,10 @@ export async function POST(request: NextRequest) {
     const ref = typeof body?.ref === 'string' ? body.ref : '';
     const handoff = await getResetHandoff(ref);
     if (!handoff) return NextResponse.json({ error: 'This payment link is invalid.' }, { status: 404 });
-    if (handoff.status === 'completed') return paid(handoff.returnUrl);
+    if (handoff.status === 'completed') return paid(handoff.stripeSessionId);
 
     const cardState = await readResetCard(handoff);
-    if (cardState === 'paid') return paid(handoff.returnUrl);
+    if (cardState === 'paid') return paid(handoff.stripeSessionId);
     if (cardState !== 'open') {
       return NextResponse.json(
         { error: 'This reset can no longer be paid.' },
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
           console.error('Reset record failed:', recorded.error);
           return NextResponse.json({ error: recorded.error }, { status: 500 });
         }
-        return paid(recorded.returnUrl);
+        return paid(existing.id);
       }
       if (existing.status === 'complete') {
         return NextResponse.json(
@@ -113,10 +113,10 @@ export async function POST(request: NextRequest) {
             console.error('Reset record failed:', recorded.error);
             return NextResponse.json({ error: recorded.error }, { status: 500 });
           }
-          return paid(recorded.returnUrl);
+          return paid(winner.id);
         }
       }
-      return paid(handoff.returnUrl);
+      return paid(claimed.sessionId || handoff.stripeSessionId);
     }
 
     if (claimed.sessionId !== created.id) {
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
           console.error('Reset record failed:', recorded.error);
           return NextResponse.json({ error: recorded.error }, { status: 500 });
         }
-        return paid(recorded.returnUrl);
+        return paid(winner.id);
       }
       if (!winner.client_secret) return NextResponse.json({ error: 'Unable to start checkout' }, { status: 502 });
       await hideStripeLink(winner.id);

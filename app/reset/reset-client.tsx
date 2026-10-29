@@ -5,9 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Header from '../components/Header';
 import VipCardPayment, { type VipCardHandle } from '../vip/components/VipCardPayment';
 import { formatUsdFromCents } from './config';
-import { isAllowedResetRedirect } from './urls';
 
-type Phase = 'loading' | 'ready' | 'leaving' | 'paid' | 'error';
+type Phase = 'loading' | 'ready' | 'paid' | 'error';
 
 type ReadyCheckout = {
   clientSecret: string;
@@ -58,13 +57,6 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
     setPhase('loading');
     setPaymentError(null);
 
-    const leave = (url: string) => {
-      if (!isAllowedResetRedirect(url)) return false;
-      setPhase('leaving');
-      window.location.replace(url);
-      return true;
-    };
-
     const load = async () => {
       const response = await fetch('/reset/api/session', {
         method: 'POST',
@@ -74,7 +66,10 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
       const data = await response.json();
       if (cancelled) return;
       if (data.paid) {
-        if (typeof data.returnUrl === 'string' && leave(data.returnUrl)) return;
+        if (data.sessionId) {
+          router.replace(`/reset/return?session_id=${encodeURIComponent(data.sessionId)}`);
+          return;
+        }
         setPhase('paid');
         return;
       }
@@ -110,7 +105,7 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
     return () => {
       cancelled = true;
     };
-  }, [ref, attempt]);
+  }, [ref, attempt, router]);
 
   const pay = async () => {
     if (!checkout || isPaying) return;
@@ -159,10 +154,9 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
           </p>
         )}
 
-        {(phase === 'loading' || phase === 'leaving') && (
-          <div className="mt-16 flex flex-col items-center gap-3">
+        {phase === 'loading' && (
+          <div className="mt-16 flex justify-center">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#0FF1CE] border-t-transparent" />
-            {phase === 'leaving' && <p className="text-sm text-gray-400">Payment received. Returning you now.</p>}
           </div>
         )}
 
