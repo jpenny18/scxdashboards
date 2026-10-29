@@ -619,6 +619,44 @@ function assertResetPriceSchedule() {
   if (!funded.ok || funded.order.amountCents !== 299900 || funded.order.discountPercent !== 0) {
     throw new Error('Funded reset handoff failed');
   }
+
+  const tradingSite = evaluateResetHandoff(
+    customerBody({
+      resetCategory: 'challenge',
+      accountType: 'standard',
+      accountSize: 5000,
+      catalogType: 'Standard',
+      challengeType: 'Standard Reset',
+      challengeAmount: '$5,000',
+      tierName: null,
+      originalPrice: 88.5,
+      discountPercent: 20,
+      expectedAmount: 70.8,
+      expectedAmountCents: 7080,
+      returnUrl: 'https://www.shockwavetrading.com/dashboard/accounts?reset=paid',
+      cancelUrl: 'https://www.shockwavetrading.com/dashboard/accounts',
+    })
+  );
+  if (!tradingSite.ok) throw new Error('shockwavetrading.com return address was refused');
+
+  const foreignSite = evaluateResetHandoff(
+    customerBody({
+      resetCategory: 'challenge',
+      accountType: 'standard',
+      accountSize: 5000,
+      catalogType: 'Standard',
+      challengeType: 'Standard Reset',
+      challengeAmount: '$5,000',
+      tierName: null,
+      originalPrice: 88.5,
+      discountPercent: 20,
+      expectedAmount: 70.8,
+      expectedAmountCents: 7080,
+      returnUrl: 'https://evil.example/dashboard/accounts?reset=paid',
+      cancelUrl: 'https://www.shockwavetrading.com/dashboard/accounts',
+    })
+  );
+  if (foreignSite.ok) throw new Error('An off-site return address was accepted');
 }
 
 assertResetPriceSchedule();
