@@ -23,7 +23,6 @@ type ReadyCheckout = {
   sizeLabel: string;
   resetType: string;
   platform: string;
-  cancelUrl: string;
 };
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
@@ -44,7 +43,6 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
   const [phase, setPhase] = useState<Phase>('loading');
   const [message, setMessage] = useState('');
   const [checkout, setCheckout] = useState<ReadyCheckout | null>(null);
-  const [cancelUrl, setCancelUrl] = useState('');
   const [isPaying, setIsPaying] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -75,7 +73,6 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
       });
       const data = await response.json();
       if (cancelled) return;
-      if (typeof data.cancelUrl === 'string') setCancelUrl(data.cancelUrl);
       if (data.paid) {
         if (typeof data.returnUrl === 'string' && leave(data.returnUrl)) return;
         setPhase('paid');
@@ -100,7 +97,6 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
         sizeLabel: String(data.sizeLabel || ''),
         resetType: String(data.resetType || ''),
         platform: String(data.platform || ''),
-        cancelUrl: String(data.cancelUrl || ''),
       });
       setPhase('ready');
     };
@@ -150,8 +146,6 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
 
   const payer = checkout ? [checkout.firstName, checkout.lastName].filter(Boolean).join(' ') : '';
   const discounted = checkout?.discountPercent === 20;
-  const leaveUrl = checkout?.cancelUrl || cancelUrl;
-  const canLeave = isAllowedResetRedirect(leaveUrl);
 
   return (
     <div className="min-h-screen bg-black font-sans text-white">
@@ -161,7 +155,7 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
         <h1 className="mt-3 text-center text-3xl font-bold text-white">Complete your payment</h1>
         {(phase === 'loading' || phase === 'ready') && (
           <p className="mt-3 text-center text-sm text-gray-400">
-            Your card is charged a one-time fee. After it succeeds, you return to your account.
+            Your card is charged a one-time fee. You can close this page after it succeeds.
           </p>
         )}
 
@@ -186,11 +180,6 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
               <button type="button" onClick={() => setAttempt((value) => value + 1)} className="mt-4 text-sm text-[#0FF1CE] underline">
                 Try again
               </button>
-            )}
-            {canLeave && (
-              <a href={leaveUrl} className="mt-4 block text-sm text-gray-400 underline">
-                Cancel and return
-              </a>
             )}
           </div>
         )}
@@ -250,15 +239,6 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
             >
               {isPaying ? 'Processing...' : `Pay ${formatUsdFromCents(checkout.amountCents)}`}
             </button>
-
-            {canLeave && (
-              <a
-                href={leaveUrl}
-                className="mt-4 block text-center text-sm text-gray-400 underline decoration-gray-600 underline-offset-4 hover:text-white"
-              >
-                Cancel and return
-              </a>
-            )}
           </div>
         )}
       </main>

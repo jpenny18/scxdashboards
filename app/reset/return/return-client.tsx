@@ -12,7 +12,6 @@ export default function ResetReturnClient() {
   const sessionId = params.get('session_id');
   const [view, setView] = useState<View>('loading');
   const [message, setMessage] = useState('');
-  const [cancelUrl, setCancelUrl] = useState('');
 
   useEffect(() => {
     if (!sessionId) {
@@ -31,12 +30,9 @@ export default function ResetReturnClient() {
           if (!cancelled) {
             setView('error');
             setMessage(data.error || 'Unable to confirm this payment.');
-            if (typeof data.cancelUrl === 'string') setCancelUrl(data.cancelUrl);
           }
           return;
         }
-        if (typeof data.cancelUrl === 'string') setCancelUrl(data.cancelUrl);
-
         if (data.paymentStatus === 'paid') {
           const completed = await fetch('/reset/api/complete', {
             method: 'POST',
@@ -75,8 +71,6 @@ export default function ResetReturnClient() {
       cancelled = true;
     };
   }, [sessionId]);
-
-  const canLeave = isAllowedResetRedirect(cancelUrl);
 
   return (
     <div className="min-h-screen bg-black font-sans text-white">
@@ -122,12 +116,6 @@ export default function ResetReturnClient() {
             <h1 className="text-3xl font-bold text-white">Payment not completed</h1>
             <p className="mt-4 text-sm text-gray-400">{message}</p>
           </>
-        )}
-
-        {canLeave && view !== 'loading' && (
-          <a href={cancelUrl} className="mt-6 inline-block text-sm text-gray-400 underline">
-            Cancel and return
-          </a>
         )}
       </main>
     </div>

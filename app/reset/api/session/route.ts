@@ -34,7 +34,6 @@ function ready(handoff: ResetHandoff, session: ResetCheckoutSession) {
     sizeLabel: handoff.challengeAmount,
     resetType: handoff.resetType,
     platform: handoff.platform,
-    cancelUrl: handoff.cancelUrl,
   });
 }
 
@@ -54,7 +53,7 @@ export async function POST(request: NextRequest) {
     if (cardState === 'paid') return paid(handoff.returnUrl);
     if (cardState !== 'open') {
       return NextResponse.json(
-        { error: 'This reset can no longer be paid.', cancelUrl: handoff.cancelUrl },
+        { error: 'This reset can no longer be paid.' },
         { status: 409 }
       );
     }
@@ -68,13 +67,13 @@ export async function POST(request: NextRequest) {
         const recorded = await recordPaidReset(handoff.id, existing);
         if (!recorded.ok) {
           console.error('Reset record failed:', recorded.error);
-          return NextResponse.json({ error: recorded.error, cancelUrl: handoff.cancelUrl }, { status: 500 });
+          return NextResponse.json({ error: recorded.error }, { status: 500 });
         }
         return paid(recorded.returnUrl);
       }
       if (existing.status === 'complete') {
         return NextResponse.json(
-          { error: 'This payment is still processing.', cancelUrl: handoff.cancelUrl },
+          { error: 'This payment is still processing.' },
           { status: 409 }
         );
       }
@@ -87,7 +86,7 @@ export async function POST(request: NextRequest) {
 
     if (expired) {
       return NextResponse.json(
-        { error: 'This checkout link has expired. Start the payment again.', cancelUrl: handoff.cancelUrl },
+        { error: 'This checkout link has expired. Start the payment again.' },
         { status: 410 }
       );
     }
@@ -112,7 +111,7 @@ export async function POST(request: NextRequest) {
           const recorded = await recordPaidReset(handoff.id, winner);
           if (!recorded.ok) {
             console.error('Reset record failed:', recorded.error);
-            return NextResponse.json({ error: recorded.error, cancelUrl: handoff.cancelUrl }, { status: 500 });
+            return NextResponse.json({ error: recorded.error }, { status: 500 });
           }
           return paid(recorded.returnUrl);
         }
@@ -126,7 +125,7 @@ export async function POST(request: NextRequest) {
         const recorded = await recordPaidReset(handoff.id, winner);
         if (!recorded.ok) {
           console.error('Reset record failed:', recorded.error);
-          return NextResponse.json({ error: recorded.error, cancelUrl: handoff.cancelUrl }, { status: 500 });
+          return NextResponse.json({ error: recorded.error }, { status: 500 });
         }
         return paid(recorded.returnUrl);
       }
@@ -161,7 +160,6 @@ export async function GET(request: NextRequest) {
       status: session.status || 'open',
       paymentStatus: session.payment_status || 'unpaid',
       amountCents: handoff.amountCents,
-      cancelUrl: handoff.cancelUrl,
     });
   } catch (error) {
     console.error('Reset session lookup error:', error instanceof Error ? error.message : error);
