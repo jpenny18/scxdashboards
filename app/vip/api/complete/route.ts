@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { vipOptionByLevel } from '../../config';
+import { completeVipHandoffBySession } from '../../lib/handoff';
 import { recordPaidVipOrder, resolveCheckoutDraft } from '../../lib/records';
 import { isCheckoutSessionId, retrieveVipCheckoutSession } from '../../lib/stripe-server';
 
@@ -34,6 +35,7 @@ export async function POST(request: NextRequest) {
 
     try {
       const recorded = await recordPaidVipOrder(session, draft, option);
+      await completeVipHandoffBySession(session.id);
       return NextResponse.json({ paid: true, orderId: recorded.orderId, alreadyRecorded: recorded.alreadyRecorded });
     } catch (error) {
       console.error('VIP order record failed:', error instanceof Error ? error.message : error);

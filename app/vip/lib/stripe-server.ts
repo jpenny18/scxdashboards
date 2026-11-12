@@ -87,6 +87,100 @@ export async function createVipCheckoutSession(amountCents: number, origin: stri
   return stripeRequest<VipCheckoutSession>('/checkout/sessions', params);
 }
 
+export type VipPortalContact = {
+  email: string;
+  phone: string;
+  firstName: string;
+  lastName: string;
+  country: string;
+  discordUsername: string;
+};
+
+function meta(value: string): string {
+  return value.replace(/[\r\n]/g, ' ').trim().slice(0, 500);
+}
+
+export function vipPortalCheckoutForm(
+  amountCents: number,
+  origin: string,
+  customer: VipPortalContact,
+  includeCustomerEmail: boolean
+) {
+  const params = new URLSearchParams();
+  params.set('ui_mode', 'elements');
+  params.set('mode', 'payment');
+  params.set('line_items[0][quantity]', '1');
+  params.set('line_items[0][price_data][currency]', VIP_CHECKOUT.currency);
+  params.set('line_items[0][price_data][unit_amount]', String(amountCents));
+  params.set('line_items[0][price_data][product_data][name]', VIP_CHECKOUT.stripeProductName);
+  params.set('line_items[0][price_data][product_data][description]', 'One-time activation fee');
+  params.set('return_url', `${origin}${VIP_CHECKOUT.returnPath}?session_id={CHECKOUT_SESSION_ID}`);
+  params.set('billing_address_collection', 'auto');
+  params.set('integration_identifier', VIP_CHECKOUT.integrationId);
+  withoutStripeLink(params);
+  if (includeCustomerEmail) params.set('customer_email', customer.email.trim());
+  params.set('metadata[email]', meta(customer.email));
+  params.set('metadata[phone]', meta(customer.phone));
+  params.set('metadata[first_name]', meta(customer.firstName));
+  params.set('metadata[last_name]', meta(customer.lastName));
+  params.set('metadata[country]', meta(customer.country));
+  params.set('metadata[discord]', meta(customer.discordUsername));
+  return params;
+}
+
+export async function createVipPortalCheckoutSession(
+  amountCents: number,
+  origin: string,
+  customer: VipPortalContact
+): Promise<VipCheckoutSession> {
+  try {
+    return await stripeRequest<VipCheckoutSession>(
+      '/checkout/sessions',
+      vipPortalCheckoutForm(amountCents, origin, customer, true)
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (!/email/i.test(message)) throw error;
+    return stripeRequest<VipCheckoutSession>(
+      '/checkout/sessions',
+      vipPortalCheckoutForm(amountCents, origin, customer, false)
+    );
+  }
+}
+
+function assertVipStripeChargeStaysGeneric() {
+  const params = vipPortalCheckoutForm(
+    549900,
+    'https://www.scxdashboards.com',
+    {
+      email: 'buyer@example.com',
+      phone: '+15551234567',
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      country: 'Canada',
+      discordUsername: '',
+    },
+    true
+  );
+  if (params.get('line_items[0][price_data][product_data][name]') !== 'VIP Activation') {
+    throw new Error('VIP Stripe product name drifted');
+  }
+  if (params.get('line_items[0][price_data][product_data][description]') !== 'One-time activation fee') {
+    throw new Error('VIP Stripe product description drifted');
+  }
+  const metadataKeys = Array.from(params.keys())
+    .filter((key) => key.startsWith('metadata['))
+    .sort();
+  const expectedKeys = ['metadata[country]', 'metadata[discord]', 'metadata[email]', 'metadata[first_name]', 'metadata[last_name]', 'metadata[phone]'];
+  if (metadataKeys.join(',') !== expectedKeys.join(',')) throw new Error('VIP Stripe metadata drifted');
+  const raw = params.toString().toLowerCase();
+  for (const word of ['platform', 'mt4', 'mt5', 'allocation', 'professional', 'executive', 'institutional', '$1m', '$1.5m']) {
+    if (raw.includes(word)) throw new Error(`VIP Stripe charge includes ${word}`);
+  }
+}
+
+assertVipStripeChargeStaysGeneric();
+
 export async function updateVipCheckoutContact(sessionId: string, customer: VipCustomer) {
   const params = new URLSearchParams();
   params.set('customer_email', customer.email.trim());

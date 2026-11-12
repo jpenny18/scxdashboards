@@ -6,7 +6,6 @@ import {
   VIP_RESET_DISCOUNT_PERCENT,
   centsToDollars,
   type VipCustomer,
-  type VipOption,
 } from '../config';
 import { paymentIntentIdOf, type VipCheckoutSession } from './stripe-server';
 
@@ -24,6 +23,9 @@ export type VipCheckoutDraft = {
   chargedPrice: number;
   resetCode: string | null;
   resetCodeId: string | null;
+  userId?: string | null;
+  discountCode?: string | null;
+  discountId?: string | null;
   firstName: string;
   lastName: string;
   email: string;
@@ -54,6 +56,9 @@ function draftFromData(sessionId: string, data: DocumentData): VipCheckoutDraft 
     chargedPrice: Number(data.chargedPrice || 0),
     resetCode: data.resetCode ? String(data.resetCode) : null,
     resetCodeId: data.resetCodeId ? String(data.resetCodeId) : null,
+    userId: data.userId ? String(data.userId) : null,
+    discountCode: data.discountCode ? String(data.discountCode) : null,
+    discountId: data.discountId ? String(data.discountId) : null,
     firstName: String(data.firstName || ''),
     lastName: String(data.lastName || ''),
     email: String(data.email || ''),
@@ -153,7 +158,7 @@ export async function resolveCheckoutDraft(session: VipCheckoutSession): Promise
   };
 }
 
-export async function recordPaidVipOrder(session: VipCheckoutSession, draft: VipCheckoutDraft, option: VipOption) {
+export async function recordPaidVipOrder(session: VipCheckoutSession, draft: VipCheckoutDraft, option: { level: string }) {
   if (session.amount_total !== draft.amountCents) {
     throw new Error('Paid amount does not match this VIP checkout');
   }
@@ -167,7 +172,7 @@ export async function recordPaidVipOrder(session: VipCheckoutSession, draft: Vip
   const email = draft.email || session.customer_details?.email || session.customer_email || '';
   const now = Timestamp.now();
   const order = {
-    userId: null,
+    userId: draft.userId || null,
     customerEmail: email,
     firstName: draft.firstName,
     lastName: draft.lastName,
@@ -179,6 +184,8 @@ export async function recordPaidVipOrder(session: VipCheckoutSession, draft: Vip
     platform: draft.platform,
     addOns: draft.resetCode ? ['reset-account'] : [],
     resetCode: draft.resetCode,
+    discountCode: draft.discountCode || null,
+    discountId: draft.discountId || null,
     originalAmount: draft.originalPrice,
     totalAmount: draft.chargedPrice,
     paymentMethod: 'card' as const,
@@ -193,6 +200,12 @@ export async function recordPaidVipOrder(session: VipCheckoutSession, draft: Vip
 
   if (draft.resetCodeId) {
     await db.collection(RESET_CODES).doc(draft.resetCodeId).update({
+      usageCount: FieldValue.increment(1),
+      updatedAt: Timestamp.now(),
+    });
+  }
+  if (draft.discountId) {
+    await db.collection('discounts').doc(draft.discountId).update({
       usageCount: FieldValue.increment(1),
       updatedAt: Timestamp.now(),
     });
