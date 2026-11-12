@@ -140,7 +140,7 @@ export default function ResetClient({ publishableKey }: { publishableKey: string
   };
 
   const payer = checkout ? [checkout.firstName, checkout.lastName].filter(Boolean).join(' ') : '';
-  const discounted = checkout?.discountPercent === 20;
+  const discounted = checkout ? checkout.originalCents > checkout.amountCents : false;
 
   return (
     <div className="min-h-screen bg-black font-sans text-white">

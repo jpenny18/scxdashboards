@@ -2,7 +2,15 @@ import { createHash } from 'crypto';
 import { db } from '@/lib/firebase-admin';
 import { Timestamp, type DocumentData } from 'firebase-admin/firestore';
 import { RESET } from '../config';
-import { evaluateResetHandoff, isResetReference, type ResetOrder } from '../catalog';
+import {
+  emptyResetPriceSnapshot,
+  readResetPriceSnapshot,
+  verifyResetHandoff,
+  isResetReference,
+  type ResetAccountRecord,
+  type ResetOrder,
+  type ResetPriceSnapshot,
+} from '../catalog';
 import { isAllowedResetRedirect } from '../urls';
 import { sendResetPaymentEmails, type ResetReceipt } from './notify';
 import { paymentIntentIdOf, type ResetCheckoutSession } from './stripe-server';
@@ -74,10 +82,10 @@ function handoffFrom(id: string, data: DocumentData): ResetHandoff | null {
   const email = String(data.email || '');
   if (!status || !expiresAt || !email) return null;
   if (!Number.isInteger(amountCents) || amountCents < RESET.minChargeCents) return null;
-  if (!Number.isInteger(originalCents) || originalCents < amountCents) return null;
+  if (!Number.isInteger(originalCents) || originalCents < RESET.minChargeCents) return null;
   if (!isAllowedResetRedirect(returnUrl) || !isAllowedResetRedirect(cancelUrl)) return null;
   const discountPercent = Number(data.discountPercent);
-  if (discountPercent !== 0 && discountPercent !== 20) return null;
+  if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) return null;
 
   const accountStep = data.accountStep === null || data.accountStep === undefined ? null : Number(data.accountStep);
   if (accountStep !== null && !Number.isInteger(accountStep)) return null;
@@ -191,11 +199,44 @@ export async function readResetCard(handoff: ResetHandoff): Promise<ResetCardSta
   return 'open';
 }
 
+async function loadResetAccount(userId: string, accountId: string): Promise<ResetAccountRecord | null> {
+  const snap = await db.collection('userMetaApiAccounts').where('userId', '==', userId).get();
+  const match = snap.docs.find((entry) => String(entry.data().accountId || '') === accountId);
+  if (!match) return null;
+  const data = match.data();
+  return {
+    accountId,
+    accountType: data.accountType,
+    accountSize: data.accountSize,
+    platform: data.platform,
+    status: data.status,
+    step: data.step,
+  };
+}
+
+async function loadResetPriceSnapshot(): Promise<ResetPriceSnapshot> {
+  try {
+    const snap = await db.collection('settings').doc('reset-prices').get();
+    if (!snap.exists) return emptyResetPriceSnapshot();
+    return readResetPriceSnapshot(snap.data());
+  } catch (error) {
+    console.error('Failed to load reset prices:', error instanceof Error ? error.message : error);
+    return emptyResetPriceSnapshot();
+  }
+}
+
 export async function openResetHandoff(body: Record<string, unknown>): Promise<
   | { ok: true; handoffId: string; reused: boolean }
   | { ok: false; status: number; error: string }
 > {
-  const evaluated = evaluateResetHandoff(body);
+  const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
+  const accountId = typeof body.accountId === 'string' ? body.accountId.trim() : '';
+  const account = userId && accountId ? await loadResetAccount(userId, accountId) : null;
+  if (!account) {
+    return { ok: false, status: 409, error: 'That trading account was not found.' };
+  }
+  const prices = await loadResetPriceSnapshot();
+  const evaluated = verifyResetHandoff(body, account, prices);
   if (!evaluated.ok) {
     if (evaluated.error === 'The reset total does not match the price on this portal.') {
       console.error('Reset price mismatch', {

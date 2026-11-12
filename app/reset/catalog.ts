@@ -1,8 +1,8 @@
 /**
- * Reset fee table. Shockwave sends one locked order. Recompute the charge
- * here and refuse the handoff when the cents differ. Do not discount again.
- * A percent-off charge is Math.round(fullCents * (100 - discountPercent) / 100).
- * Stripe never receives this table.
+ * Reset fee table. Shockwave sends one locked order. The charge is the
+ * built-in fee unless settings/reset-prices has an override. A percent-off
+ * charge is Math.round(fullCents * (100 - percent) / 100), taken off the list
+ * price. Stripe never receives this table.
  */
 
 import { isAllowedResetRedirect } from './urls';
@@ -132,7 +132,226 @@ function resetTypeLabel(category: ResetCategory, catalogType: string, tierName: 
 }
 
 export function chargeCents(listCents: number, discountPercent: number): number {
+  if (!discountPercent) return listCents;
   return Math.round((listCents * (100 - discountPercent)) / 100);
+}
+
+const MIN_CHARGE_CENTS = 50;
+const MAX_FIXED_PRICE = 100_000;
+
+export type ResetPriceRule =
+  | { mode: 'discount'; discountPercent: number }
+  | { mode: 'fixed'; price: number };
+
+export type ResetPriceSnapshot = {
+  global: Record<string, ResetPriceRule>;
+  users: Record<string, { catalog: Record<string, ResetPriceRule>; accounts: Record<string, ResetPriceRule> }>;
+};
+
+export type ResetAccountRecord = {
+  accountId: string;
+  accountType?: unknown;
+  accountSize?: unknown;
+  platform?: unknown;
+  status?: unknown;
+  step?: unknown;
+};
+
+export function emptyResetPriceSnapshot(): ResetPriceSnapshot {
+  return { global: {}, users: {} };
+}
+
+export function resetCatalogKey(priced: Pick<PricedReset, 'resetCategory' | 'accountType' | 'accountSize'>): string {
+  if (priced.resetCategory === 'funded') return `funded:*:${priced.accountSize}`;
+  if (priced.resetCategory === 'vip') return `vip:vip:${priced.accountSize}`;
+  return `challenge:${priced.accountType}:${priced.accountSize}`;
+}
+
+function readAccountSize(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const size = Math.round(value);
+    return size > 0 ? size : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/[$,\s]/g, ''));
+    if (Number.isFinite(parsed) && parsed > 0) return Math.round(parsed);
+  }
+  return null;
+}
+
+function normalizeAccountType(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/[\s_]/g, '-');
+}
+
+function formatPlatform(value: unknown): 'MT4' | 'MT5' {
+  const platform = String(value || '').trim().toLowerCase();
+  if (platform.includes('mt4') || platform === '4') return 'MT4';
+  return 'MT5';
+}
+
+function vipTierName(size: number): string | null {
+  if (size === 1000000) return 'Professional';
+  if (size === 1500000) return 'VIP';
+  if (size === 2000000) return 'Executive';
+  if (size === 3000000) return 'Institutional';
+  return null;
+}
+
+function challengeAccountType(value: string): ChallengeAccountType | null {
+  if (value === '1step' || value === 'onestep' || value === 'one-step') return '1-step';
+  if (value === 'standard' || value === 'instant' || value === 'gauntlet' || value === '1-step') return value;
+  return null;
+}
+
+export function builtinQuoteForAccount(
+  account: Omit<ResetAccountRecord, 'accountId'>
+): { ok: true; priced: PricedReset } | { ok: false; error: string } {
+  const size = readAccountSize(account.accountSize);
+  if (size === null) return { ok: false, error: 'Choose a valid account size' };
+  const type = normalizeAccountType(account.accountType);
+  const step = Number(account.step);
+  const status = String(account.status || '').trim().toLowerCase();
+  const funded = step === 3 || status === 'funded';
+  const platform = formatPlatform(account.platform);
+
+  if (type === 'vip' || size > 500000) {
+    return priceResetSelection({
+      resetCategory: 'vip',
+      accountType: 'vip',
+      accountSize: size,
+      catalogType: 'VIP',
+      tierName: vipTierName(size),
+      platform,
+    });
+  }
+
+  const accountType = challengeAccountType(type);
+  if (!accountType) return { ok: false, error: 'Reset type is invalid' };
+  if (funded) {
+    return priceResetSelection({
+      resetCategory: 'funded',
+      accountType,
+      accountSize: size,
+      catalogType: 'Funded',
+      tierName: null,
+      platform,
+    });
+  }
+  return priceResetSelection({
+    resetCategory: 'challenge',
+    accountType,
+    accountSize: size,
+    catalogType: CATALOG_LABEL[accountType],
+    tierName: null,
+    platform,
+  });
+}
+
+function parseStoredRule(value: unknown): ResetPriceRule | null {
+  if (!value || typeof value !== 'object') return null;
+  const mode = (value as { mode?: unknown }).mode;
+  if (mode === 'discount') {
+    const percent = Number((value as { discountPercent?: unknown }).discountPercent);
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) return null;
+    return { mode: 'discount', discountPercent: Math.round(percent * 100) / 100 };
+  }
+  if (mode === 'fixed') {
+    const price = Number((value as { price?: unknown }).price);
+    if (!Number.isFinite(price) || price < MIN_CHARGE_CENTS / 100 || price > MAX_FIXED_PRICE) return null;
+    return { mode: 'fixed', price: Math.round(price * 100) / 100 };
+  }
+  return null;
+}
+
+function listCentsForCatalogKey(key: string): number | null {
+  const [category, type, sizeRaw] = key.split(':');
+  const size = Number(sizeRaw);
+  if (!Number.isInteger(size) || key.split(':').length !== 3) return null;
+  if (category === 'funded' && type === '*') return FUNDED_LIST_CENTS[size] ?? null;
+  if (category === 'vip' && type === 'vip') return VIP_LIST.find((row) => row.accountSize === size)?.listCents ?? null;
+  if (category === 'challenge') {
+    const accountType = challengeAccountType(type);
+    if (!accountType) return null;
+    return CHALLENGE_LIST_CENTS[accountType][size as keyof (typeof CHALLENGE_LIST_CENTS)[ChallengeAccountType]] ?? null;
+  }
+  return null;
+}
+
+function usableCatalogRule(key: string, value: unknown): ResetPriceRule | null {
+  const listCents = listCentsForCatalogKey(key);
+  const rule = parseStoredRule(value);
+  if (listCents === undefined || listCents === null || !rule) return null;
+  return chargeCentsForRule(listCents, rule) === null ? null : rule;
+}
+
+function chargeCentsForRule(listCents: number, rule: ResetPriceRule): number | null {
+  const cents = rule.mode === 'discount'
+    ? chargeCents(listCents, rule.discountPercent)
+    : Math.round(rule.price * 100);
+  if (!Number.isInteger(cents) || cents < MIN_CHARGE_CENTS) return null;
+  return cents;
+}
+
+function displayDiscountPercent(listCents: number, chargeCents: number, rule: ResetPriceRule): number {
+  if (rule.mode === 'discount') return rule.discountPercent;
+  const original = listCents / 100;
+  const price = chargeCents / 100;
+  if (price < original - 0.001) return Math.max(1, Math.round((1 - price / original) * 100));
+  return 0;
+}
+
+function readRuleMap(value: unknown, catalogKeysOnly: boolean): Record<string, ResetPriceRule> {
+  const rules: Record<string, ResetPriceRule> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return rules;
+  for (const [key, ruleValue] of Object.entries(value as Record<string, unknown>)) {
+    const rule = catalogKeysOnly ? usableCatalogRule(key, ruleValue) : parseStoredRule(ruleValue);
+    if (rule) rules[key] = rule;
+  }
+  return rules;
+}
+
+export function readResetPriceSnapshot(data: unknown): ResetPriceSnapshot {
+  const snapshot = emptyResetPriceSnapshot();
+  if (!data || typeof data !== 'object') return snapshot;
+  const raw = data as { global?: unknown; users?: unknown };
+  snapshot.global = readRuleMap(raw.global, true);
+  if (!raw.users || typeof raw.users !== 'object' || Array.isArray(raw.users)) return snapshot;
+  for (const [userId, value] of Object.entries(raw.users as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const record = value as { catalog?: unknown; accounts?: unknown };
+    const catalog = readRuleMap(record.catalog, true);
+    const accounts = readRuleMap(record.accounts, false);
+    if (Object.keys(catalog).length === 0 && Object.keys(accounts).length === 0) continue;
+    snapshot.users[userId] = { catalog, accounts };
+  }
+  return snapshot;
+}
+
+export function resolveResetCharge(
+  account: ResetAccountRecord,
+  config: ResetPriceSnapshot | null | undefined,
+  userId: string
+): { ok: true; priced: PricedReset } | { ok: false; error: string } {
+  const base = builtinQuoteForAccount(account);
+  if (!base.ok) return base;
+  const key = resetCatalogKey(base.priced);
+  const storedUser = config?.users?.[userId];
+  const layers = [
+    storedUser?.accounts?.[account.accountId],
+    storedUser?.catalog?.[key],
+    config?.global?.[key],
+  ];
+  let amountCents = base.priced.amountCents;
+  let discountPercent = base.priced.discountPercent;
+  for (const rule of layers) {
+    if (!rule) continue;
+    const cents = chargeCentsForRule(base.priced.originalCents, rule);
+    if (cents === null) continue;
+    amountCents = cents;
+    discountPercent = displayDiscountPercent(base.priced.originalCents, cents, rule);
+    break;
+  }
+  return { ok: true, priced: { ...base.priced, amountCents, discountPercent } };
 }
 
 export function priceResetSelection(input: {
@@ -311,7 +530,7 @@ export function evaluateResetHandoff(body: Record<string, unknown>): { ok: true;
   if (challengeType !== priced.priced.challengeType || challengeAmount !== priced.priced.challengeAmount) {
     return { ok: false, error: 'Reset type is invalid' };
   }
-  if (body.discountPercent !== priced.priced.discountPercent) {
+  if (typeof body.discountPercent !== 'number' || !Number.isFinite(body.discountPercent) || body.discountPercent < 0 || body.discountPercent > 100) {
     return { ok: false, error: 'The reset total does not match the price on this portal.' };
   }
   if (!Array.isArray(body.addOns) || body.addOns.length !== 0) {
@@ -329,11 +548,10 @@ export function evaluateResetHandoff(body: Record<string, unknown>): { ok: true;
   if (typeof body.expectedAmountCents !== 'number' || !Number.isInteger(body.expectedAmountCents)) {
     return { ok: false, error: 'Expected amount is required' };
   }
-  if (
-    Math.round(body.originalPrice * 100) !== priced.priced.originalCents ||
-    Math.round(body.expectedAmount * 100) !== priced.priced.amountCents ||
-    body.expectedAmountCents !== priced.priced.amountCents
-  ) {
+  if (body.expectedAmountCents < MIN_CHARGE_CENTS || Math.round(body.expectedAmount * 100) !== body.expectedAmountCents) {
+    return { ok: false, error: 'The reset total does not match the price on this portal.' };
+  }
+  if (Math.round(body.originalPrice * 100) !== priced.priced.originalCents) {
     return { ok: false, error: 'The reset total does not match the price on this portal.' };
   }
 
@@ -368,6 +586,8 @@ export function evaluateResetHandoff(body: Record<string, unknown>): { ok: true;
     ok: true,
     order: {
       ...priced.priced,
+      discountPercent: body.discountPercent,
+      amountCents: body.expectedAmountCents,
       idempotencyKey,
       localOrderId,
       userId,
@@ -384,6 +604,33 @@ export function evaluateResetHandoff(body: Record<string, unknown>): { ok: true;
       cancelUrl,
     },
   };
+}
+
+export function verifyResetHandoff(
+  body: Record<string, unknown>,
+  account: ResetAccountRecord,
+  config: ResetPriceSnapshot | null | undefined
+): { ok: true; order: ResetOrder } | { ok: false; error: string } {
+  const parsed = evaluateResetHandoff(body);
+  if (!parsed.ok) return parsed;
+  const resolved = resolveResetCharge(account, config, parsed.order.userId);
+  if (!resolved.ok) return resolved;
+  const order = parsed.order;
+  const priced = resolved.priced;
+  const sameProduct =
+    order.resetCategory === priced.resetCategory &&
+    order.accountType === priced.accountType &&
+    order.accountSize === priced.accountSize &&
+    order.catalogType === priced.catalogType &&
+    order.platform === priced.platform &&
+    order.challengeType === priced.challengeType &&
+    order.challengeAmount === priced.challengeAmount &&
+    (order.tierName || '') === (priced.tierName || '') &&
+    order.originalCents === priced.originalCents &&
+    order.amountCents === priced.amountCents &&
+    order.discountPercent === priced.discountPercent;
+  if (!sameProduct) return { ok: false, error: 'The reset total does not match the price on this portal.' };
+  return { ok: true, order: { ...order, amountCents: priced.amountCents, discountPercent: priced.discountPercent, originalCents: priced.originalCents } };
 }
 
 const STANDARD_CHARGE: Record<number, number> = {
@@ -548,7 +795,17 @@ function assertResetPriceSchedule() {
     }
   }
 
-  const vip = evaluateResetHandoff(
+  const emptyPrices = emptyResetPriceSnapshot();
+  const accountFor = (body: Record<string, unknown>): ResetAccountRecord => ({
+    accountId: String(body.accountId),
+    accountType: body.accountType,
+    accountSize: body.accountSize,
+    status: body.resetCategory === 'funded' ? 'funded' : 'active',
+    step: body.resetCategory === 'funded' ? 3 : body.accountStep,
+    platform: body.platform,
+  });
+
+  const vip = verifyResetHandoff(
     customerBody({
       resetCategory: 'vip',
       accountType: 'vip',
@@ -561,13 +818,22 @@ function assertResetPriceSchedule() {
       discountPercent: 20,
       expectedAmount: 5999.6,
       expectedAmountCents: 599960,
-    })
+    }),
+    accountFor({
+      accountId: 'acct-100',
+      accountType: 'vip',
+      accountSize: 1500000,
+      resetCategory: 'vip',
+      accountStep: 1,
+      platform: 'MT4',
+    }),
+    emptyPrices
   );
   if (!vip.ok || vip.order.amountCents !== 599960 || vip.order.originalCents !== 749950) {
     throw new Error('VIP 1.5M handoff failed the locked fee check');
   }
 
-  const wrongCents = evaluateResetHandoff(
+  const wrongCents = verifyResetHandoff(
     customerBody({
       resetCategory: 'vip',
       accountType: 'vip',
@@ -580,11 +846,20 @@ function assertResetPriceSchedule() {
       discountPercent: 20,
       expectedAmount: 5999.6,
       expectedAmountCents: 599959,
-    })
+    }),
+    accountFor({
+      accountId: 'acct-100',
+      accountType: 'vip',
+      accountSize: 1500000,
+      resetCategory: 'vip',
+      accountStep: 1,
+      platform: 'MT4',
+    }),
+    emptyPrices
   );
   if (wrongCents.ok) throw new Error('A mismatched reset total was accepted');
 
-  const gauntlet = evaluateResetHandoff(
+  const gauntlet = verifyResetHandoff(
     customerBody({
       resetCategory: 'challenge',
       accountType: 'gauntlet',
@@ -597,11 +872,20 @@ function assertResetPriceSchedule() {
       discountPercent: 20,
       expectedAmount: 15.99,
       expectedAmountCents: 1599,
-    })
+    }),
+    accountFor({
+      accountId: 'acct-100',
+      accountType: 'gauntlet',
+      accountSize: 10000,
+      resetCategory: 'challenge',
+      accountStep: 1,
+      platform: 'MT4',
+    }),
+    emptyPrices
   );
   if (!gauntlet.ok || gauntlet.order.amountCents !== 1599) throw new Error('Gauntlet reset handoff failed');
 
-  const funded = evaluateResetHandoff(
+  const funded = verifyResetHandoff(
     customerBody({
       resetCategory: 'funded',
       accountType: 'gauntlet',
@@ -614,10 +898,106 @@ function assertResetPriceSchedule() {
       discountPercent: 0,
       expectedAmount: 2999,
       expectedAmountCents: 299900,
-    })
+    }),
+    accountFor({
+      accountId: 'acct-100',
+      accountType: 'gauntlet',
+      accountSize: 500000,
+      resetCategory: 'funded',
+      accountStep: 3,
+      platform: 'MT4',
+    }),
+    emptyPrices
   );
   if (!funded.ok || funded.order.amountCents !== 299900 || funded.order.discountPercent !== 0) {
     throw new Error('Funded reset handoff failed');
+  }
+
+  const standardAccount: ResetAccountRecord = {
+    accountId: 'acct-100',
+    accountType: 'standard',
+    accountSize: 50000,
+    status: 'active',
+    step: 1,
+    platform: 'MT4',
+  };
+  const standardBody = (cents: number, percent: number) => customerBody({
+    resetCategory: 'challenge',
+    accountType: 'standard',
+    accountSize: 50000,
+    catalogType: 'Standard',
+    challengeType: 'Standard Reset',
+    challengeAmount: '$50,000',
+    tierName: null,
+    originalPrice: 433.5,
+    discountPercent: percent,
+    expectedAmount: cents / 100,
+    expectedAmountCents: cents,
+  });
+  const halfOff = verifyResetHandoff(standardBody(21675, 50), standardAccount, {
+    global: { 'challenge:standard:50000': { mode: 'discount', discountPercent: 50 } },
+    users: {},
+  });
+  if (!halfOff.ok || halfOff.order.amountCents !== 21675) throw new Error('Global 50% reset price was rejected');
+
+  const builtinRejected = verifyResetHandoff(standardBody(34680, 20), standardAccount, {
+    global: { 'challenge:standard:50000': { mode: 'discount', discountPercent: 50 } },
+    users: {},
+  });
+  if (builtinRejected.ok) throw new Error('Built-in 20% price was accepted over a custom rule');
+
+  const fixedUser = verifyResetHandoff(standardBody(10000, 77), standardAccount, {
+    global: { 'challenge:standard:50000': { mode: 'discount', discountPercent: 50 } },
+    users: {
+      firebaseUid123456: {
+        catalog: { 'challenge:standard:50000': { mode: 'fixed', price: 100 } },
+        accounts: {},
+      },
+    },
+  });
+  if (!fixedUser.ok || fixedUser.order.amountCents !== 10000 || fixedUser.order.discountPercent !== 77) {
+    throw new Error('Customer fixed reset price did not win over the global rule');
+  }
+
+  const accountRule = verifyResetHandoff(standardBody(26010, 40), standardAccount, {
+    global: { 'challenge:standard:50000': { mode: 'discount', discountPercent: 50 } },
+    users: {
+      firebaseUid123456: {
+        catalog: { 'challenge:standard:50000': { mode: 'fixed', price: 100 } },
+        accounts: { 'acct-100': { mode: 'discount', discountPercent: 40 } },
+      },
+    },
+  });
+  if (!accountRule.ok || accountRule.order.amountCents !== 26010) {
+    throw new Error('Account reset price did not win over the customer catalog rule');
+  }
+
+  const skipped = verifyResetHandoff(
+    customerBody({
+      resetCategory: 'challenge',
+      accountType: 'gauntlet',
+      accountSize: 10000,
+      catalogType: 'Gauntlet',
+      challengeType: 'Gauntlet Reset',
+      challengeAmount: '$10,000',
+      tierName: null,
+      originalPrice: 19.99,
+      discountPercent: 20,
+      expectedAmount: 15.99,
+      expectedAmountCents: 1599,
+    }),
+    {
+      accountId: 'acct-100',
+      accountType: 'gauntlet',
+      accountSize: 10000,
+      status: 'active',
+      step: 1,
+      platform: 'MT4',
+    },
+    { global: { 'challenge:gauntlet:10000': { mode: 'discount', discountPercent: 99 } }, users: {} }
+  );
+  if (!skipped.ok || skipped.order.amountCents !== 1599) {
+    throw new Error('A reset rule below $0.50 did not fall through to the built-in price');
   }
 
   const tradingSite = evaluateResetHandoff(
